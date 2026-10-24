@@ -4,11 +4,9 @@ import time
 
 app = Flask(__name__)
 
-# Lưu dữ liệu sau khi quét
 scraped_data = []
 
 def run_eport_scraper(bill_number):
-    """Giữ nguyên hoàn toàn logic Selenium từ mã nguồn PyQt5 cũ của anh"""
     extracted_data = []
     driver = None
     try:
@@ -28,30 +26,43 @@ def run_eport_scraper(bill_number):
         driver = webdriver.Chrome(options=options)
         driver.get("https://eport.danangport.vn/pages/tracuuedo.html")
 
-        wait = WebDriverWait(driver, 15)
-        inputs = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "input")))
+        wait = WebDriverWait(driver, 20)
         
-        if len(inputs) > 1:
-            inputs[1].clear()
-            inputs[1].send_keys(bill_number)
+        # Tìm ô nhập Bill/Cont một cách an toàn nhất (input đầu tiên hoặc theo placeholder)
+        time.sleep(2)
+        inputs = driver.find_elements(By.TAG_NAME, "input")
+        target_input = None
+        for inp in inputs:
+            # Lọc các input dạng text có thể nhập liệu được
+            if inp.get_attribute("type") in ["text", "search", ""]:
+                target_input = inp
+                break
+        
+        if not target_input and len(inputs) > 0:
+            target_input = inputs[0]
 
+        if target_input:
+            target_input.clear()
+            target_input.send_keys(bill_number)
+
+        # Tìm và bấm nút Tra cứu / Tìm kiếm chính xác
         buttons = driver.find_elements(By.TAG_NAME, "button")
         for btn in buttons:
-            if "tìm kiếm" in btn.text.lower() or "search" in btn.text.lower() or "tra cứu" in btn.text.lower():
+            txt = btn.text.lower()
+            if "tìm" in txt or "search" in txt or "tra" in txt or "kiếm" in txt:
                 btn.click()
                 break
 
-        time.sleep(4)
+        time.sleep(5) # Chờ kết quả trả về từ ePort
 
-        # Bung tối đa danh sách bảng
+        # Bung tối đa danh sách bảng (200 dòng)
         try:
             selects = driver.find_elements(By.TAG_NAME, "select")
             for sel_elem in selects:
                 try:
                     select_obj = Select(sel_elem)
                     for opt in select_obj.options:
-                        txt = opt.text.strip()
-                        if txt in ["200", "300", "500", "All", "Tất cả"]:
+                        if opt.text.strip() in ["200", "300", "500", "All", "Tất cả"]:
                             select_obj.select_by_visible_text(opt.text)
                             driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", sel_elem)
                             time.sleep(3)
@@ -61,6 +72,7 @@ def run_eport_scraper(bill_number):
         except Exception:
             pass
 
+        # Quét dữ liệu từ bảng kết quả
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
@@ -71,19 +83,12 @@ def run_eport_scraper(bill_number):
                 location = cols[7].text.strip() if len(cols) > 7 else ''
 
                 if cont_no and cont_no not in [c['containerNo'] for c in extracted_data]:
-                    # Kiểm tra điều kiện gắp ra
-                    is_out = bool(date_out and date_out != '') or 'Delivered' in status
-                    
-                    # Danh sách ngoại lệ đã thanh toán theo yêu cầu
+                    is_out = bool(date_out and date_out != '') or 'Delivered' in status.title()
                     paid_exceptions = ['TLLU4766351', 'UETU7035823']
-                    
-                    # Kiểm tra có phải hạ về bãi SMART không
                     is_smart = 'SMART' in location.upper() or 'SMART' in status.upper()
 
-                    # Cảnh báo đỏ: Thuộc bãi SMART, đã lấy ra (is_out), KHÔNG nằm trong danh sách đã thanh toán ngoại lệ
-                    is_alert = False
-                    if is_smart and is_out and cont_no not in paid_exceptions:
-                        is_alert = True
+                    # Báo đỏ nếu thuộc SMART, đã gắp ra mà không nằm trong danh sách ngoại lệ đã thanh toán
+                    is_alert = bool(is_smart and is_out and cont_no not in paid_exceptions)
 
                     extracted_data.append({
                         'billNo': cols[0].text.strip(),
@@ -99,7 +104,6 @@ def run_eport_scraper(bill_number):
                     })
 
         driver.quit()
-        # Sắp xếp theo vị trí bãi
         extracted_data.sort(key=lambda x: (x['location'], x['containerNo']))
 
     except Exception as e:
@@ -141,7 +145,6 @@ HTML_TEMPLATE = """
     <div class="container-fluid py-4 px-4">
         <h3 class="mb-3 text-primary fw-bold">🚢 BỘ GIÁM SÁT CONTAINER ePort ĐÀ NẴNG (150+ CONT)</h3>
         
-        <!-- Form nhập Bill và Quét -->
         <div class="card mb-4 shadow-sm">
             <div class="card-body">
                 <form method="POST" action="/fetch" class="row g-3 align-items-center">
@@ -161,7 +164,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- Thống kê tổng quan -->
         <div class="row text-white text-center mb-4 g-2">
             <div class="col-md-3"><div class="p-3 bg-secondary rounded shadow-sm"><h5>Tổng số Cont: {{ containers|length }}</h5></div></div>
             <div class="col-md-3"><div class="p-3 bg-success rounded shadow-sm"><h5>✅ Đã gắp ra: {{ count_out }}</h5></div></div>
@@ -169,7 +171,6 @@ HTML_TEMPLATE = """
             <div class="col-md-3"><div class="p-3 bg-danger rounded shadow-sm"><h5>⚠️ SMART Chưa TT (Báo Đỏ): {{ count_alert }}</h5></div></div>
         </div>
 
-        <!-- Bảng danh sách kết quả -->
         <div class="table-responsive">
             <table class="table table-bordered align-middle bg-white shadow-sm">
                 <thead class="table-dark text-center">
@@ -210,7 +211,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu. Vжима Bấm nút "Quét Ngay ePort" để tải dữ liệu!</td>
+                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu hoặc đang quét... Vui lòng bấm "Quét Ngay ePort"!</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -218,9 +219,8 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Đoạn mã đếm ngược 15 phút tự động load lại trang -->
     <script>
-        let timeLeft = 900; // 15 phút
+        let timeLeft = 900;
         const countdownEl = document.getElementById('countdown');
         setInterval(() => {
             let m = Math.floor(timeLeft / 60);
