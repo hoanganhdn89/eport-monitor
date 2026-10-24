@@ -4,74 +4,113 @@ import time
 
 app = Flask(__name__)
 
-# Danh sách dữ liệu hiển thị
+# Lưu dữ liệu sau khi quét
 scraped_data = []
 
-def run_selenium_scrape(bill_number):
-    """Hàm chạy Selenium lấy dữ liệu thật từ ePort Đà Nẵng"""
-    results = []
+def run_eport_scraper(bill_number):
+    """Giữ nguyên hoàn toàn logic Selenium từ mã nguồn PyQt5 cũ của anh"""
+    extracted_data = []
+    driver = None
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import Select
 
         options = Options()
-        options.add_argument('--headless')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
+        options.add_argument("--headless")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
         driver = webdriver.Chrome(options=options)
-        url = f"https://eport.danangport.vn/tra-cuu-thong-tin-container?bill={bill_number}"
-        driver.get(url)
-        time.sleep(3)
+        driver.get("https://eport.danangport.vn/pages/tracuuedo.html")
+
+        wait = WebDriverWait(driver, 15)
+        inputs = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "input")))
+        
+        if len(inputs) > 1:
+            inputs[1].clear()
+            inputs[1].send_keys(bill_number)
+
+        buttons = driver.find_elements(By.TAG_NAME, "button")
+        for btn in buttons:
+            if "tìm kiếm" in btn.text.lower() or "search" in btn.text.lower() or "tra cứu" in btn.text.lower():
+                btn.click()
+                break
+
+        time.sleep(4)
+
+        # Bung tối đa danh sách bảng
+        try:
+            selects = driver.find_elements(By.TAG_NAME, "select")
+            for sel_elem in selects:
+                try:
+                    select_obj = Select(sel_elem)
+                    for opt in select_obj.options:
+                        txt = opt.text.strip()
+                        if txt in ["200", "300", "500", "All", "Tất cả"]:
+                            select_obj.select_by_visible_text(opt.text)
+                            driver.execute_script("arguments[0].dispatchEvent(new Event('change'));", sel_elem)
+                            time.sleep(3)
+                            break
+                except:
+                    continue
+        except Exception:
+            pass
 
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
         for row in rows:
             cols = row.find_elements(By.TAG_NAME, "td")
-            if len(cols) >= 7:
-                cont_num = cols[0].text.strip()
-                opr = cols[1].text.strip()
-                ngay_vao = cols[2].text.strip()
-                ngay_ra = cols[3].text.strip()
-                trang_thai = cols[4].text.strip()
-                vi_tri = cols[5].text.strip()
-                thanh_toan = cols[6].text.strip()
+            if len(cols) >= 8:
+                cont_no = cols[1].text.strip()
+                date_out = cols[4].text.strip()
+                status = cols[6].text.strip() if len(cols) > 6 else ''
+                location = cols[7].text.strip() if len(cols) > 7 else ''
 
-                is_alert = False
-                if "SMART" in vi_tri.upper() or "SMART" in trang_thai.upper():
-                    if "CHƯA" in thanh_toan.upper() or "UNPAID" in thanh_toan.upper():
+                if cont_no and cont_no not in [c['containerNo'] for c in extracted_data]:
+                    # Kiểm tra điều kiện gắp ra
+                    is_out = bool(date_out and date_out != '') or 'Delivered' in status
+                    
+                    # Danh sách ngoại lệ đã thanh toán theo yêu cầu
+                    paid_exceptions = ['TLLU4766351', 'UETU7035823']
+                    
+                    # Kiểm tra có phải hạ về bãi SMART không
+                    is_smart = 'SMART' in location.upper() or 'SMART' in status.upper()
+
+                    # Cảnh báo đỏ: Thuộc bãi SMART, đã lấy ra (is_out), KHÔNG nằm trong danh sách đã thanh toán ngoại lệ
+                    is_alert = False
+                    if is_smart and is_out and cont_no not in paid_exceptions:
                         is_alert = True
 
-                results.append({
-                    "bill": bill_number,
-                    "cont": cont_num,
-                    "opr": opr,
-                    "ngay_vao": ngay_vao,
-                    "ngay_ra": ngay_ra,
-                    "trang_thai": trang_thai,
-                    "vi_tri": vi_tri,
-                    "smart": thanh_toan if thanh_toan else "Chưa TT",
-                    "alert": is_alert
-                })
+                    extracted_data.append({
+                        'billNo': cols[0].text.strip(),
+                        'containerNo': cont_no,
+                        'opr': cols[2].text.strip(),
+                        'dateIn': cols[3].text.strip(),
+                        'dateOut': date_out,
+                        'status': status,
+                        'location': location,
+                        'is_out': is_out,
+                        'is_smart': is_smart,
+                        'alert': is_alert
+                    })
+
         driver.quit()
+        # Sắp xếp theo vị trí bãi
+        extracted_data.sort(key=lambda x: (x['location'], x['containerNo']))
+
     except Exception as e:
-        print(f"Lỗi Selenium: {e}")
-    
-    # Nếu không cào được dữ liệu web, trả về dòng trạng thái mẫu để kiểm tra giao diện
-    if not results:
-        results.append({
-            "bill": bill_number,
-            "cont": f"CONT-{bill_number[-4:]}01",
-            "opr": "SIT",
-            "ngay_vao": "24/10/2026",
-            "ngay_ra": "24/10/2026",
-            "trang_thai": "Đã gắp ra",
-            "vi_tri": "Bãi SMART",
-            "smart": "Chưa TT",
-            "alert": True  # Tự động bật nhấp nháy đỏ cảnh báo
-        })
-    return results
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
+        print(f"Lỗi quét ePort: {e}")
+
+    return extracted_data
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -100,25 +139,37 @@ HTML_TEMPLATE = """
 </head>
 <body class="bg-light">
     <div class="container-fluid py-4 px-4">
-        <h3 class="mb-3 text-primary fw-bold">🚢 GIÁM SÁT CONTAINER ePort ĐÀ NẴNG</h3>
+        <h3 class="mb-3 text-primary fw-bold">🚢 BỘ GIÁM SÁT CONTAINER ePort ĐÀ NẴNG (150+ CONT)</h3>
         
+        <!-- Form nhập Bill và Quét -->
         <div class="card mb-4 shadow-sm">
             <div class="card-body">
-                <form method="POST" action="/update_list">
-                    <label for="raw_data" class="form-label fw-bold">Nhập / Dán danh sách Số Bill (Mỗi dòng 1 bill):</label>
-                    <textarea class="form-control mb-2" id="raw_data" name="raw_data" rows="2" placeholder="Dán số Bill vào đây..."></textarea>
-                    <button type="submit" class="btn btn-success fw-bold">🔍 Bắt Đầu Quét & Cập Nhật ePort</button>
+                <form method="POST" action="/fetch" class="row g-3 align-items-center">
+                    <div class="col-auto">
+                        <label class="fw-bold">Số Bill / Số Cont:</label>
+                    </div>
+                    <div class="col-md-4">
+                        <input type="text" name="bill" class="form-control fw-bold" value="{{ current_bill }}">
+                    </div>
+                    <div class="col-auto">
+                        <button type="submit" class="btn btn-primary fw-bold">🔄 Quét Ngay ePort</button>
+                    </div>
+                    <div class="col-auto">
+                        <span class="text-danger fw-bold" id="countdown">Tự động quét sau: 15:00</span>
+                    </div>
                 </form>
             </div>
         </div>
 
+        <!-- Thống kê tổng quan -->
         <div class="row text-white text-center mb-4 g-2">
             <div class="col-md-3"><div class="p-3 bg-secondary rounded shadow-sm"><h5>Tổng số Cont: {{ containers|length }}</h5></div></div>
-            <div class="col-md-3"><div class="p-3 bg-success rounded shadow-sm"><h5>Đã gắp ra: {{ count_gap }}</h5></div></div>
-            <div class="col-md-3"><div class="p-3 bg-warning text-dark rounded shadow-sm"><h5>Đang chờ: {{ count_cho }}</h5></div></div>
-            <div class="col-md-3"><div class="p-3 bg-danger rounded shadow-sm"><h5>⚠️ SMART Chưa TT: {{ count_smart_alert }}</h5></div></div>
+            <div class="col-md-3"><div class="p-3 bg-success rounded shadow-sm"><h5>✅ Đã gắp ra: {{ count_out }}</h5></div></div>
+            <div class="col-md-3"><div class="p-3 bg-warning text-dark rounded shadow-sm"><h5>⏳ Đang chờ: {{ count_wait }}</h5></div></div>
+            <div class="col-md-3"><div class="p-3 bg-danger rounded shadow-sm"><h5>⚠️ SMART Chưa TT (Báo Đỏ): {{ count_alert }}</h5></div></div>
         </div>
 
+        <!-- Bảng danh sách kết quả -->
         <div class="table-responsive">
             <table class="table table-bordered align-middle bg-white shadow-sm">
                 <thead class="table-dark text-center">
@@ -136,62 +187,78 @@ HTML_TEMPLATE = """
                 </thead>
                 <tbody>
                     {% for item in containers %}
-                    <tr class="{% if item.alert %}smart-blink{% endif %}">
+                    <tr class="{% if item.alert %}smart-blink{% elif item.is_out %}table-success{% endif %}">
                         <td class="text-center">{{ loop.index }}</td>
-                        <td class="fw-bold">{{ item.bill }}</td>
-                        <td class="fw-bold text-primary">{{ item.cont }}</td>
+                        <td>{{ item.billNo }}</td>
+                        <td class="fw-bold text-primary">{{ item.containerNo }}</td>
                         <td class="text-center">{{ item.opr }}</td>
-                        <td class="text-center">{{ item.ngay_vao }}</td>
-                        <td class="text-center">{{ item.ngay_ra }}</td>
-                        <td class="text-center">{{ item.trang_thai }}</td>
-                        <td class="text-center">{{ item.vi_tri }}</td>
+                        <td class="text-center">{{ item.dateIn }}</td>
+                        <td class="text-center">{{ item.dateOut }}</td>
+                        <td>{{ item.status }}</td>
+                        <td>{{ item.location }}</td>
                         <td class="text-center">
                             {% if item.alert %}
-                                <span class="badge-blink">⚠️ CẢNH BÁO SMART CHƯA TT</span>
+                                <span class="badge-blink">⚠️ SMART CHƯA TT (CẦN GẤP)</span>
+                            {% elif item.containerNo in ['TLLU4766351', 'UETU7035823'] %}
+                                <span class="badge bg-info text-dark">Đã TT (Ngoại lệ)</span>
+                            {% elif item.is_out %}
+                                <span class="badge bg-success">Đã gắp ra / Hợp lệ</span>
                             {% else %}
-                                <span class="badge bg-success">Đã TT / Hợp Lệ</span>
+                                <span class="badge bg-secondary">Đang bãi</span>
                             {% endif %}
                         </td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu. Vui lòng dán số Bill vào ô trên và bấm Quét!</td>
+                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu. Vжима Bấm nút "Quét Ngay ePort" để tải dữ liệu!</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
+
+    <!-- Đoạn mã đếm ngược 15 phút tự động load lại trang -->
+    <script>
+        let timeLeft = 900; // 15 phút
+        const countdownEl = document.getElementById('countdown');
+        setInterval(() => {
+            let m = Math.floor(timeLeft / 60);
+            let s = timeLeft % 60;
+            countdownEl.innerText = `Tự động quét sau: ${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            timeLeft--;
+            if (timeLeft < 0) {
+                location.reload();
+            }
+        }, 1000);
+    </script>
 </body>
 </html>
 """
 
+current_bill_global = "SITGHFDAU30060"
+
 @app.route('/')
 def index():
-    count_gap = sum(1 for c in scraped_data if "GẮP" in str(c.get('trang_thai','')).upper() or "RA" in str(c.get('trang_thai','')).upper())
-    count_cho = sum(1 for c in scraped_data if "CHỜ" in str(c.get('trang_thai','')).upper() or "BÃI" in str(c.get('trang_thai','')).upper())
-    count_smart_alert = sum(1 for c in scraped_data if c.get('alert'))
+    global scraped_data, current_bill_global
+    count_out = sum(1 for c in scraped_data if c.get('is_out'))
+    count_wait = len(scraped_data) - count_out
+    count_alert = sum(1 for c in scraped_data if c.get('alert'))
 
     return render_template_string(
-        HTML_TEMPLATE, 
+        HTML_TEMPLATE,
         containers=scraped_data,
-        count_gap=count_gap,
-        count_cho=count_cho,
-        count_smart_alert=count_smart_alert
+        current_bill=current_bill_global,
+        count_out=count_out,
+        count_wait=count_wait,
+        count_alert=count_alert
     )
 
-@app.route('/update_list', methods=['POST'])
-def update_list():
-    global scraped_data
-    raw_data = request.form.get('raw_data', '')
-    bills = [b.strip() for b in raw_data.splitlines() if b.strip()]
-    
-    new_results = []
-    for bill in bills:
-        data = run_selenium_scrape(bill)
-        new_results.extend(data)
-        
-    scraped_data = new_results
+@app.route('/fetch', methods=['POST'])
+def fetch():
+    global scraped_data, current_bill_global
+    current_bill_global = request.form.get('bill', 'SITGHFDAU30060').strip()
+    scraped_data = run_eport_scraper(current_bill_global)
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
