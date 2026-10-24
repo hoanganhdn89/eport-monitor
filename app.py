@@ -28,32 +28,24 @@ def run_eport_scraper(bill_number):
 
         wait = WebDriverWait(driver, 20)
         
-        # Tìm ô nhập Bill/Cont một cách an toàn nhất (input đầu tiên hoặc theo placeholder)
-        time.sleep(2)
-        inputs = driver.find_elements(By.TAG_NAME, "input")
-        target_input = None
-        for inp in inputs:
-            # Lọc các input dạng text có thể nhập liệu được
-            if inp.get_attribute("type") in ["text", "search", ""]:
-                target_input = inp
-                break
-        
-        if not target_input and len(inputs) > 0:
-            target_input = inputs[0]
+        # Sử dụng logic tìm tất cả ô input y hệt bản PyQt5 local
+        inputs = wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "input")))
+        if len(inputs) > 1:
+            inputs[1].clear()
+            inputs[1].send_keys(bill_number)
+        elif len(inputs) > 0:
+            inputs[0].clear()
+            inputs[0].send_keys(bill_number)
 
-        if target_input:
-            target_input.clear()
-            target_input.send_keys(bill_number)
-
-        # Tìm và bấm nút Tra cứu / Tìm kiếm chính xác
+        # Bấm nút tìm kiếm
         buttons = driver.find_elements(By.TAG_NAME, "button")
         for btn in buttons:
             txt = btn.text.lower()
-            if "tìm" in txt or "search" in txt or "tra" in txt or "kiếm" in txt:
+            if "tìm kiếm" in txt or "search" in txt or "tra cứu" in txt:
                 btn.click()
                 break
 
-        time.sleep(5) # Chờ kết quả trả về từ ePort
+        time.sleep(5) # Chờ dữ liệu trả về
 
         # Bung tối đa danh sách bảng (200 dòng)
         try:
@@ -83,11 +75,11 @@ def run_eport_scraper(bill_number):
                 location = cols[7].text.strip() if len(cols) > 7 else ''
 
                 if cont_no and cont_no not in [c['containerNo'] for c in extracted_data]:
-                    is_out = bool(date_out and date_out != '') or 'Delivered' in status.title()
+                    is_out = bool(date_out and date_out != '') or 'Delivered' in status
                     paid_exceptions = ['TLLU4766351', 'UETU7035823']
                     is_smart = 'SMART' in location.upper() or 'SMART' in status.upper()
 
-                    # Báo đỏ nếu thuộc SMART, đã gắp ra mà không nằm trong danh sách ngoại lệ đã thanh toán
+                    # Báo đỏ nếu hạ bãi SMART, đã gắp ra, và KHÔNG nằm trong danh sách đã thanh toán ngoại lệ
                     is_alert = bool(is_smart and is_out and cont_no not in paid_exceptions)
 
                     extracted_data.append({
@@ -211,7 +203,7 @@ HTML_TEMPLATE = """
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu hoặc đang quét... Vui lòng bấm "Quét Ngay ePort"!</td>
+                        <td colspan="9" class="text-center text-muted py-4">Chưa có dữ liệu. Vui lòng bấm nút "Quét Ngay ePort" để tải dữ liệu!</td>
                     </tr>
                     {% endfor %}
                 </tbody>
