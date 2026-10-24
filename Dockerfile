@@ -1,6 +1,5 @@
 FROM python:3.9-slim
 
-# Cài đặt các công cụ cần thiết để tải Chrome
 RUN apt-get update && apt-get install -y \
     wget \
     curl \
